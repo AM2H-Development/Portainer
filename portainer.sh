@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install by typing:
-# wget -q -O - https://raw.githubusercontent.com/AM2H-Development/Portainer/portainer.sh | bash
+# wget -q -O - https://raw.githubusercontent.com/AM2H-Development/Portainer/master/portainer.sh | bash
 docker stop portainer
 docker rm portainer
 docker volume create portainer_data
