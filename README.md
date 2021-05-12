@@ -1,4 +1,4 @@
-# Portainer CE (2.0)
+# Portainer CE (2.X.X) / latest
 Install / upgrade Portainer Docker image on local server
 
 Install by typing:
