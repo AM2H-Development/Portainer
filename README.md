@@ -1,4 +1,4 @@
-# Portainer CE (2.X.X) / latest with ssl enabled
+# Portainer CE (2.6.X) / latest with ssl enabled
 Install / upgrade Portainer Docker image on local server
 
 Install by typing:
