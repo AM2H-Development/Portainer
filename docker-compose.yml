@@ -3,6 +3,12 @@ version: "3.9"
 services:
   portainer:
     image: "portainer/portainer-ce:2.9.2-alpine"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
     container_name: "portainer"
     networks:
       - net
