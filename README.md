@@ -1,4 +1,4 @@
-# Portainer CE (2.9.x)
+# Portainer CE (2.11.1)
 Install / upgrade Portainer Docker image on local server
 
 NEW:
