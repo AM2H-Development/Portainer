@@ -5,11 +5,9 @@ NEW:
 
 git clone https://github.com/AM2H-Development/Portainer.git
 
+touch .env (fill with your personal data, see .env in git)
+
 cd Portainer
 
-docker-composer up -d
+docker-compose --env-file ../.env up -d
 
-
-OLD:
-Install by typing:
-* wget -q -O - https://raw.githubusercontent.com/AM2H-Development/Portainer/master/portainer.sh | bash
