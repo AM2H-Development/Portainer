@@ -5,6 +5,11 @@ services:
     image: "portainer/portainer-ce:2.11.1-alpine"
     container_name: "portainer"
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
     networks:
       - net
     labels:
