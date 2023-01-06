@@ -1,4 +1,4 @@
-# Portainer CE (2.11.1)
+# Portainer CE (2.16.2)
 Install / upgrade Portainer Docker image on local server
 
 git clone https://github.com/AM2H-Development/Portainer.git
