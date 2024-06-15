@@ -3,6 +3,7 @@ name: ${PROJECT}
 services:
   portainer:
     image: "portainer/portainer-ce:2.19.4-alpine"
+    env_file: .env
     container_name: "portainer"
     restart: unless-stopped
     logging:
