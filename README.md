@@ -8,18 +8,6 @@
 * docker compose up -d
 
 ## data:
-all Traefik Letsencrypt Certs are stored in volume "traefik_data", config files are read in ./
+Login data is stored in volume "portainer_data"
 
 ## use:
-* config files in ./
-* or Docker labels
-
-
-
-
-touch .env (fill with your personal data, see .env in git)
-
-cd Portainer
-
-docker-compose --env-file ../.env up -d
-
