@@ -4,7 +4,7 @@
 * git clone https://github.com/AM2H-Development/Portainer.git
 * cd Portainer
 * cp sample.env .env
-* nano .env # adopt Hostname
+* nano .env
 * docker compose up -d
 
 ## data:
