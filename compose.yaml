@@ -2,7 +2,8 @@ name: ${PROJECT}
 
 services:
   portainer:
-    image: "portainer/portainer-ce:2.27.9-alpine"
+    image: "portainer/portainer-ce:2.33.6-alpine"
+    user: "root:988"
     env_file: .env
     container_name: "portainer"
     restart: unless-stopped
@@ -13,24 +14,13 @@ services:
         max-file: "10"
     networks:
       - net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.portainer.rule=Host(`${HOST}`)"
-      - "traefik.http.routers.portainer.entrypoints=websecure"
-      - "traefik.http.routers.portainer.tls.certresolver=myresolver"
-      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
-      - "traefik.http.middlewares.portainersts.headers.stsincludesubdomains=false"
-      - "traefik.http.middlewares.portainersts.headers.stspreload=true"
-      - "traefik.http.middlewares.portainersts.headers.stsseconds=31536000"
-      - "traefik.http.middlewares.portainersts.headers.isdevelopment=false"
-      - "traefik.http.routers.service.middlewares=portainersts"
     volumes:
       - "portainer_data:/data"
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock"
 
 networks:
   net:
-    name: traefik_net
+    name: cloudflare-net
     external: true
 
 volumes:
