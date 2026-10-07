@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 6)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 7)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=6
+CORE_VERSION=7
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -33,6 +33,10 @@ die()  { err "$*"; exit 1; }
 
 # --- Standardwerte (in deploy.conf.sh ueberschreibbar) -----------------------
 SERVICE_NAME="$(basename "$ROOT")"
+COMPOSE_DIR=""                # Verzeichnis eines FREMDEN Compose-Stacks (z. B. Upstream-Klon); leer = dieses Repo
+COMPOSE_REPO_URL=""           # wird nach COMPOSE_DIR geklont, falls das Verzeichnis fehlt
+COMPOSE_PROJECT=""            # Projektname (-p), noetig, wenn COMPOSE_DIR gesetzt ist
+COMPOSE_FILES=()              # absolute Pfade der Compose-Dateien (-f), z. B. Upstream + eigenes Override
 NETWORKS=(cloudflare-net)     # externe Docker-Netzwerke, werden bei Bedarf angelegt
 BACKUP_PATHS=()               # Pfade relativ zum Repo, werden archiviert (.env immer)
 BACKUP_VOLUMES=()             # benannte Compose-Volumes (Namen wie in compose.yaml)
@@ -48,6 +52,7 @@ hook_preflight() { :; }       # zusaetzliche Pruefungen vor Install/Update
 hook_version()   { :; }       # gibt die laufende Dienst-Version aus (nur Anzeige)
 hook_backup()    { :; }       # $1 = Backup-Verzeichnis (z. B. pg_dump, laeuft bei laufenden Diensten)
 hook_restore()   { :; }       # $1 = Backup-Verzeichnis (Dienste sind gestoppt; Hook startet bei Bedarf selbst Teile)
+hook_pre_pull()  { :; }       # vor dem Laden/Bauen der Images (z. B. Upstream-Klon aktualisieren)
 hook_check_update() { :; }    # nach dem Bauen, vor der Rueckfrage; != 0 bricht das Update ab (z. B. Major-Sperre)
 hook_post_up()   { :; }       # nach Start und Health-Check (z. B. Datenbank-Extensions aktualisieren)
 hook_smoke()     { :; }       # Funktionstest nach Start
@@ -119,7 +124,8 @@ run_quiet_retry() {
     sleep $(( i * 30 )); i=$(( i + 1 ))
   done
 }
-dc() { docker compose "$@"; }
+DC_ARGS=()
+dc() { docker compose "${DC_ARGS[@]}" "$@"; }
 
 call_hook() {
   local h=$1; shift
@@ -184,6 +190,18 @@ load_conf() {
   [[ -f deploy.conf.sh ]] || die "deploy.conf.sh fehlt."
   # shellcheck disable=SC1091
   source ./deploy.conf.sh
+  DC_ARGS=()
+  if [[ -n $COMPOSE_DIR ]]; then
+    if [[ ! -d $COMPOSE_DIR && -n $COMPOSE_REPO_URL ]]; then
+      info "Klone $COMPOSE_REPO_URL nach $COMPOSE_DIR ..."
+      run git clone -q "$COMPOSE_REPO_URL" "$COMPOSE_DIR" || die "git clone fehlgeschlagen."
+    fi
+    [[ -d $COMPOSE_DIR || $DRY == 1 ]] || die "COMPOSE_DIR existiert nicht: $COMPOSE_DIR"
+    DC_ARGS+=(--project-directory "$COMPOSE_DIR" --env-file "$ROOT/.env")
+  fi
+  [[ -z $COMPOSE_PROJECT ]] || DC_ARGS+=(-p "$COMPOSE_PROJECT")
+  local f
+  for f in "${COMPOSE_FILES[@]}"; do DC_ARGS+=(-f "$f"); done
 }
 
 # --- .env aus sample.env -----------------------------------------------------
@@ -305,17 +323,15 @@ snapshot_images() {
   done < <(dc config --images | sort -u)
 }
 
-# Wie snapshot_images, aber mit den IDs der Images, die gerade WIRKLICH laufen
-# ("-" = Dienst laeuft nicht oder noch nie mit diesem Image). So bleibt ein
-# abgebrochenes/abgelehntes Update beim naechsten Lauf erkennbar.
+# Image-Stand der Container, die gerade WIRKLICH laufen: "<referenz> <image-id>".
+# Dazu alle Images der aktuellen Compose-Konfiguration, die nicht laufen, mit "-". So bleibt ein
+# abgebrochenes/abgelehntes Update erkennbar, und Tag-Wechsel (z. B. Zammad 7.1.3 -> 7.2.1) werden sichtbar.
 snapshot_running() {
-  local running name id cid
-  running="$(for cid in $(dc ps -a -q); do docker inspect -f '{{.Config.Image}} {{.Image}}' "$cid"; done)"
-  while IFS= read -r name; do
-    [[ -n $name ]] || continue
-    id="$(awk -v n="$name" '$1 == n { print $2; exit }' <<<"$running")"
-    printf '%s %s\n' "$name" "${id:--}"
-  done < <(dc config --images | sort -u)
+  local cid name
+  {
+    for cid in $(dc ps -a -q); do docker inspect -f '{{.Config.Image}} {{.Image}}' "$cid"; done
+    while IFS= read -r name; do [[ -n $name ]] && printf '%s -\n' "$name"; done < <(dc config --images)
+  } | sort -u | awk '{ if (!($1 in id) || id[$1] == "-") id[$1] = $2 } END { for (n in id) print n, id[n] }' | sort
 }
 
 image_repo() {
@@ -325,10 +341,11 @@ image_repo() {
 
 show_image_changes() {
   local name old new
-  join <(sort "$1") <(sort "$2") | while read -r name old new; do
+  join -a1 -a2 -e - -o 0,1.2,2.2 <(sort "$1") <(sort "$2") | while read -r name old new; do
     [[ $old == "$new" ]] && continue
-    [[ $old == "-" ]] && old="sha256:(neu)"
-    printf '   %s: %s -> %s\n' "$name" "${old:7:12}" "${new:7:12}"
+    if   [[ $new == "-" ]]; then printf '   %s: %s -> (wird nicht mehr verwendet)\n' "$name" "${old:7:12}"
+    elif [[ $old == "-" ]]; then printf '   %s: (neu) -> %s\n' "$name" "${new:7:12}"
+    else printf '   %s: %s -> %s\n' "$name" "${old:7:12}" "${new:7:12}"; fi
   done
 }
 
@@ -491,6 +508,7 @@ cmd_install() {
     return 0
   fi
   info "Erstinstallation: $SERVICE_NAME"
+  call_hook hook_pre_pull || die "hook_pre_pull fehlgeschlagen."
   info "Lade/baue Images ..."
   run_quiet_retry 3 dc pull --ignore-buildable || die "Images konnten nicht geladen werden. Es wurde nichts veraendert."
   run_quiet_retry 3 dc build --pull || die "Images konnten nicht gebaut werden (Registry erreichbar? Rate-Limit?). Es wurde nichts veraendert."
@@ -510,6 +528,7 @@ cmd_update() {
   ver_before="$(hook_version 2>/dev/null || true)"
   snapshot_running > "$TMP/before"
 
+  call_hook hook_pre_pull || die "hook_pre_pull fehlgeschlagen."
   info "Lade/baue Images ..."
   run_quiet_retry 3 dc pull --ignore-buildable || die "Images konnten nicht geladen werden. Laufende Dienste sind unveraendert."
   run_quiet_retry 3 dc build --pull || die "Images konnten nicht gebaut werden (Registry erreichbar? Rate-Limit?). Laufende Dienste sind unveraendert - spaeter erneut versuchen."

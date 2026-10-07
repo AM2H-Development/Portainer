@@ -64,10 +64,12 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 | `BACKUP_PATHS` | Pfade (relativ zum Repo), die archiviert werden (`.env` immer) | leer |
 | `BACKUP_VOLUMES` | benannte Compose-Volumes (Namen wie in `compose.yaml`), werden als `vol_<name>.tar.gz` gesichert | leer |
 | `BACKUP_STOP` | Dienste fuer Pfad-/Volume-Backup kurz stoppen | `1` |
+| `COMPOSE_DIR`, `COMPOSE_REPO_URL`, `COMPOSE_PROJECT`, `COMPOSE_FILES` | den Stack in einem anderen Verzeichnis steuern (z. B. Upstream-Klon): Verzeichnis, Klon-URL falls es fehlt, Projektname (`-p`), Compose-Dateien (`-f`). Die `.env` bleibt in diesem Repo (`--env-file`) | leer |
 | `NETWORKS` | externe Docker-Netzwerke, werden bei Bedarf angelegt | `cloudflare-net` |
 | `KEEP_BACKUPS`, `HEALTH_TIMEOUT`, `MIN_FREE_MB` | Grenzwerte | `7`, `180`, `2048` |
 | `hook_version` | gibt die laufende Version aus (Anzeige) | – |
 | `hook_backup DIR` | zusaetzliche Sicherung, z. B. `pg_dump` (Dienste laufen) | – |
+| `hook_pre_pull` | vor dem Laden/Bauen der Images, z. B. einen Upstream-Klon aktualisieren | – |
 | `hook_restore DIR` | Wiederherstellung dazu; die Dienste sind gestoppt, der Hook startet bei Bedarf selbst Teile (z. B. nur die Datenbank) | – |
 | `hook_check_update` | nach dem Bauen, vor der Rueckfrage; Rueckgabewert != 0 bricht das Update ab (z. B. Major-Sperre, siehe `--allow-major`) | – |
 | `hook_post_up` | nach Start und Health-Check, z. B. Datenbank-Extensions aktualisieren | – |
