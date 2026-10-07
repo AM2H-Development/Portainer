@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 7)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 8)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=7
+CORE_VERSION=8
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -41,6 +41,7 @@ NETWORKS=(cloudflare-net)     # externe Docker-Netzwerke, werden bei Bedarf ange
 BACKUP_PATHS=()               # Pfade relativ zum Repo, werden archiviert (.env immer)
 BACKUP_VOLUMES=()             # benannte Compose-Volumes (Namen wie in compose.yaml)
 BACKUP_STOP=1                 # 1 = Dienste fuer das Datei-/Volume-Backup kurz stoppen
+BACKUP_QUIESCE=()             # Dienste, die VOR hook_backup gestoppt werden (Datenbank bleibt an): Dump ohne Verlustfenster
 BACKUP_IMAGE="alpine:3"       # Hilfs-Image fuer tar (kein sudo noetig)
 KEEP_BACKUPS=7                # so viele Backups bleiben in ./backups
 HEALTH_TIMEOUT=180            # Sekunden, bis Container gesund sein muessen
@@ -100,7 +101,9 @@ done
 
 # --- Hilfsfunktionen ---------------------------------------------------------
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+PROGRESS_PID=""
+BACKUP_STOPPED=0
+trap 'progress_stop; rm -rf "$TMP"' EXIT
 trap '[[ $BASH_COMMAND == return* ]] || err "Unerwarteter Fehler in Zeile $LINENO (Befehl: $BASH_COMMAND)"' ERR
 
 run() {
@@ -126,6 +129,40 @@ run_quiet_retry() {
 }
 DC_ARGS=()
 dc() { docker compose "${DC_ARGS[@]}" "$@"; }
+
+# Fortschrittsanzeige fuer lange Schritte (z. B. Dumps): gibt alle 30 s die Dateigroesse aus
+progress_start() {
+  ( while sleep 30; do printf '   ... %s: %s\n' "$(basename "$1")" "$(du -h "$1" 2>/dev/null | cut -f1)"; done ) &
+  PROGRESS_PID=$!
+}
+progress_stop() {
+  if [[ -n $PROGRESS_PID ]]; then
+    kill "$PROGRESS_PID" 2>/dev/null || true
+    wait "$PROGRESS_PID" 2>/dev/null || true
+    PROGRESS_PID=""
+  fi
+}
+
+# Bei Hangup (Verbindungsabbruch), Strg+C oder TERM: vom Skript gestoppte Dienste wieder starten
+on_signal() {
+  trap - HUP INT TERM
+  progress_stop
+  if [[ $BACKUP_STOPPED == 1 ]]; then
+    { printf 'Abbruch (%s) - starte die gestoppten Dienste wieder ...\n' "$1"; dc start; } >/dev/null 2>&1 || true
+  fi
+  exit 130
+}
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+
+# Hinweis, wenn lange Laeufe ohne tmux/screen gestartet werden (Verbindungsabbruch beendet sonst das Skript)
+warn_no_multiplexer() {
+  if [[ -t 0 && -z ${TMUX:-} && -z ${STY:-} && $YES != 1 ]]; then
+    warn "Du arbeitest nicht in tmux/screen: bei einem Verbindungsabbruch wird dieses Skript beendet. Besser: tmux new -s deploy"
+  fi
+  return 0
+}
 
 call_hook() {
   local h=$1; shift
@@ -399,7 +436,6 @@ wait_healthy() {
 }
 
 # --- Backup ------------------------------------------------------------------
-BACKUP_STOPPED=0
 
 ensure_helper_image() {
   docker image inspect "$BACKUP_IMAGE" >/dev/null 2>&1 && return 0
@@ -468,19 +504,42 @@ rotate_backups() {
   for (( i = 0; i < n; i++ )); do run rm -rf -- "${dirs[i]}"; done
 }
 
+# Nur vollstaendige Backups (ohne .incomplete-Markierung); aeltere Backups ohne Markierung gelten als vollstaendig.
 latest_backup() {
+  local d
   [[ -d backups ]] || return 0
-  find backups -mindepth 1 -maxdepth 1 -type d | sort | tail -1
+  find backups -mindepth 1 -maxdepth 1 -type d | sort | while read -r d; do
+    [[ -e $d/.incomplete ]] || printf '%s\n' "$d"
+  done | tail -1
+}
+
+# Reste unterbrochener Backups entfernen
+cleanup_incomplete() {
+  local d
+  [[ -d backups ]] || return 0
+  while read -r d; do
+    warn "Entferne unvollstaendiges Backup: $d"
+    run rm -rf -- "$d" || warn "Konnte $d nicht entfernen (Rechte?) - bitte von Hand loeschen."
+  done < <(find backups -mindepth 2 -maxdepth 2 -name .incomplete -printf '%h\n' 2>/dev/null)
 }
 
 # $1 = Datei mit Image-Snapshot (fuer Rollback)
 # Hinweis: Wird in 'if !' aufgerufen, dort ist 'set -e' unwirksam -> jeder Schritt prueft selbst.
 do_backup() {
   BACKUP_DIR="backups/$(date +%Y%m%d_%H%M%S)"
+  # Eindeutiger Name, auch wenn zwei Backups in derselben Sekunde entstehen
+  local n=1; while [[ -e $BACKUP_DIR ]]; do n=$(( n + 1 )); BACKUP_DIR="backups/$(date +%Y%m%d_%H%M%S)_$n"; done
+  cleanup_incomplete
   info "Backup nach $BACKUP_DIR"
   run mkdir -p "$BACKUP_DIR" || return 1
   run chmod 700 backups "$BACKUP_DIR" || return 1
+  run touch "$BACKUP_DIR/.incomplete" || return 1
   if [[ $DRY != 1 ]]; then cp "$1" "$BACKUP_DIR/images.txt" || return 1; fi
+  if (( ${#BACKUP_QUIESCE[@]} > 0 )); then
+    info "Stoppe die Anwendung (${BACKUP_QUIESCE[*]}); die Datenbank bleibt fuer den Dump an ..."
+    BACKUP_STOPPED=1
+    run dc stop "${BACKUP_QUIESCE[@]}" || return 1
+  fi
   call_hook hook_backup "$BACKUP_DIR" || return 1
   if (( ${#BACKUP_PATHS[@]} + ${#BACKUP_VOLUMES[@]} > 0 )) && [[ $BACKUP_STOP == 1 ]]; then
     info "Stoppe Dienste fuer ein konsistentes Datei-Backup ..."
@@ -493,6 +552,7 @@ do_backup() {
     err "Backup-Archiv fehlt oder ist leer: $BACKUP_DIR/files.tar.gz"
     return 1
   fi
+  run rm -f "$BACKUP_DIR/.incomplete" || return 1
   state_set LAST_BACKUP "$BACKUP_DIR"
   ok "Backup fertig: $BACKUP_DIR"
   rotate_backups
@@ -647,6 +707,7 @@ main() {
   load_conf
 
   info "$SERVICE_NAME - deploy.sh (Kern-Version $CORE_VERSION)"
+  case $MODE in auto|backup|rollback) warn_no_multiplexer ;; esac
   [[ $DRY == 1 ]] && warn "DRY-RUN: es wird nichts veraendert."
   prepare_env
   docker_preflight

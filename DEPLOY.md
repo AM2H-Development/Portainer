@@ -63,6 +63,7 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 | `SERVICE_NAME` | Anzeigename | Verzeichnisname |
 | `BACKUP_PATHS` | Pfade (relativ zum Repo), die archiviert werden (`.env` immer) | leer |
 | `BACKUP_VOLUMES` | benannte Compose-Volumes (Namen wie in `compose.yaml`), werden als `vol_<name>.tar.gz` gesichert | leer |
+| `BACKUP_QUIESCE` | Dienste, die VOR `hook_backup` gestoppt werden (Datenbank bleibt an): Dump ohne Verlustfenster, dafuer Ausfall waehrend des Dumps | leer |
 | `BACKUP_STOP` | Dienste fuer Pfad-/Volume-Backup kurz stoppen | `1` |
 | `COMPOSE_DIR`, `COMPOSE_REPO_URL`, `COMPOSE_PROJECT`, `COMPOSE_FILES` | den Stack in einem anderen Verzeichnis steuern (z. B. Upstream-Klon): Verzeichnis, Klon-URL falls es fehlt, Projektname (`-p`), Compose-Dateien (`-f`). Die `.env` bleibt in diesem Repo (`--env-file`) | leer |
 | `NETWORKS` | externe Docker-Netzwerke, werden bei Bedarf angelegt | `cloudflare-net` |
@@ -89,3 +90,13 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 
 Services werden ueber ein `Dockerfile` gebaut (`build: .`). Die `.dockerignore` schliesst alles ausser dem Dockerfile aus,
 damit Datenverzeichnisse (oft root-eigen, gross) nicht in den Build-Kontext gelangen.
+
+## Verbindungsabbruch und lange Laeufe
+
+* **`tmux` benutzen:** `tmux new -s deploy` (Trennen: `Strg+b`, dann `d`; wieder verbinden: `tmux attach -t deploy`).
+  Ein Verbindungsabbruch beendet sonst alle Prozesse der SSH-Sitzung, auch ein laufendes Backup/Update.
+  `tools/update-all.sh` startet sich selbst in tmux (Session `ops-update`), wenn es interaktiv und tmux installiert ist.
+* **Abbruch-Sicherheit:** Bei Hangup, `Strg+C` oder TERM startet `deploy.sh` Dienste wieder, die es selbst gestoppt hat.
+  Ein unterbrochenes Backup bleibt mit `.incomplete` markiert, wird vom Rollback nie verwendet und beim naechsten
+  Backup entfernt.
+* Lange Schritte (Dumps) melden alle 30 Sekunden die Dateigroesse (`progress_start`/`progress_stop` in Hooks).
