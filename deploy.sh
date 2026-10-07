@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 4)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 5)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=4
+CORE_VERSION=5
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -96,7 +96,7 @@ done
 # --- Hilfsfunktionen ---------------------------------------------------------
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-trap 'err "Unerwarteter Fehler in Zeile $LINENO (Befehl: $BASH_COMMAND)"' ERR
+trap '[[ $BASH_COMMAND == return* ]] || err "Unerwarteter Fehler in Zeile $LINENO (Befehl: $BASH_COMMAND)"' ERR
 
 run() {
   if [[ $DRY == 1 ]]; then printf '   [dry-run] %s\n' "$*"; else "$@"; fi
@@ -104,7 +104,20 @@ run() {
 # Wie run, aber Ausgabe nur bei Fehler (BuildKit-Fortschritt ist sehr laut)
 run_quiet() {
   if [[ $DRY == 1 ]]; then printf '   [dry-run] %s\n' "$*"; return 0; fi
-  if ! "$@" >"$TMP/cmd.log" 2>&1; then cat "$TMP/cmd.log" >&2; return 1; fi
+  if ! "$@" >"$TMP/cmd.log" 2>&1; then tail -n 40 "$TMP/cmd.log" >&2; return 1; fi
+}
+# Wie run_quiet, wiederholt aber bei voruebergehenden Fehlern (z. B. Registry-Rate-Limit 429).
+# $1 = Anzahl Versuche; Wartezeit 30 s, 60 s, ...
+run_quiet_retry() {
+  local n=$1 i=1; shift
+  if [[ $DRY == 1 ]]; then printf '   [dry-run] %s\n' "$*"; return 0; fi
+  while :; do
+    if "$@" >"$TMP/cmd.log" 2>&1; then return 0; fi
+    if (( i >= n )); then tail -n 40 "$TMP/cmd.log" >&2; return 1; fi
+    warn "Fehlgeschlagen (Versuch $i/$n): $(grep -iE 'error|429|too many|timeout|unavailable' "$TMP/cmd.log" | tail -1 | cut -c1-160)"
+    warn "Warte $(( i * 30 ))s und versuche es erneut ..."
+    sleep $(( i * 30 )); i=$(( i + 1 ))
+  done
 }
 dc() { docker compose "$@"; }
 
@@ -479,8 +492,8 @@ cmd_install() {
   fi
   info "Erstinstallation: $SERVICE_NAME"
   info "Lade/baue Images ..."
-  run_quiet dc pull --ignore-buildable
-  run_quiet dc build --pull
+  run_quiet_retry 3 dc pull --ignore-buildable || die "Images konnten nicht geladen werden. Es wurde nichts veraendert."
+  run_quiet_retry 3 dc build --pull || die "Images konnten nicht gebaut werden (Registry erreichbar? Rate-Limit?). Es wurde nichts veraendert."
   run dc up -d
   wait_healthy || die "Erstinstallation nicht gesund - siehe Ausgabe oben."
   call_hook hook_post_up || die "hook_post_up fehlgeschlagen."
@@ -498,8 +511,8 @@ cmd_update() {
   snapshot_running > "$TMP/before"
 
   info "Lade/baue Images ..."
-  run_quiet dc pull --ignore-buildable
-  run_quiet dc build --pull
+  run_quiet_retry 3 dc pull --ignore-buildable || die "Images konnten nicht geladen werden. Laufende Dienste sind unveraendert."
+  run_quiet_retry 3 dc build --pull || die "Images konnten nicht gebaut werden (Registry erreichbar? Rate-Limit?). Laufende Dienste sind unveraendert - spaeter erneut versuchen."
   snapshot_images > "$TMP/after"
 
   if [[ $DRY != 1 ]] && cmp -s "$TMP/before" "$TMP/after" && [[ $GIT_CHANGED == 0 ]]; then
