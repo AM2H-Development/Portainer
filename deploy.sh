@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 8)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 9)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=8
+CORE_VERSION=9
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -70,6 +70,7 @@ Aufruf: ./deploy.sh [Optionen]
   (ohne Option)   Erstinstallation bzw. Update, je nach Zustand
   --check         Updates pruefen (baut Images, aendert nichts; Exit 10 = Update verfuegbar)
   --status        eine Statuszeile ausgeben (fuer das Inventar)
+  --compose ...   docker compose fuer diesen Stack ausfuehren (alle Dateien/Optionen gesetzt), z. B. --compose ps -a
   --backup        nur ein Backup erstellen
   --rollback      letztes Backup + vorherige Images wiederherstellen
   --adopt         bereits laufende Installation uebernehmen (nichts aendern)
@@ -81,6 +82,9 @@ Aufruf: ./deploy.sh [Optionen]
   --help, -h      diese Hilfe
 EOF
 }
+
+COMPOSE_ARGS=()
+if [[ ${1:-} == --compose ]]; then MODE=compose; COMPOSE_ARGS=("${@:2}"); set --; fi
 
 for arg in "$@"; do
   case "$arg" in
@@ -404,7 +408,7 @@ show_diag() {
 wait_healthy() {
   [[ $DRY == 1 ]] && return 0
   local deadline=$(( SECONDS + HEALTH_TIMEOUT ))
-  local ids=() id name st hs code started up bad pending
+  local ids=() id name st hs code started up bad pending created_at=0 retried=0
   info "Warte auf Container (max. ${HEALTH_TIMEOUT}s) ..."
   while :; do
     mapfile -t ids < <(dc ps -a -q)
@@ -421,6 +425,15 @@ wait_healthy() {
           (( up >= STABLE_SECS )) || pending=1 ;;
         exited/*)
           [[ $code == 0 ]] || bad+=" ${name}(exit ${code})" ;;
+        created/*)
+          # Angelegt, aber nie gestartet (z. B. Abbruch waehrend "up -d"): nach 60 s einmal nachstarten
+          pending=1; PENDING_INFO="${name}(created)"
+          if (( created_at == 0 )); then created_at=$SECONDS
+          elif (( SECONDS - created_at >= 60 && retried == 0 )); then
+            retried=1
+            warn "${name} wurde angelegt, aber nicht gestartet - starte die Container erneut (docker compose up -d)."
+            dc up -d --no-build >/dev/null 2>&1 || true
+          fi ;;
         *) pending=1; PENDING_INFO="${name}(${st}/${hs})" ;;
       esac
     done
@@ -701,6 +714,11 @@ main() {
     load_conf
     cmd_status
     return 0
+  fi
+  if [[ $MODE == compose ]]; then
+    load_conf
+    dc "${COMPOSE_ARGS[@]}"
+    return $?
   fi
   acquire_lock
   git_sync

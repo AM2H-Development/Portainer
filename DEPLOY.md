@@ -29,6 +29,7 @@ Die Datei `.env` wird nie ueberschrieben und Geheimnisse werden nie neu erzeugt,
 | `--no-pull` | kein `git pull` |
 | `--check` | Updates pruefen: baut Images, vergleicht mit dem laufenden Stand, aendert nichts. Exit-Code 10 = Update verfuegbar |
 | `--status` | eine Statuszeile (Version, Container, Kern-Version und -Hash, letztes Update ...) fuer das Inventar |
+| `--compose ...` | `docker compose` fuer diesen Stack (alle Dateien, Projekt und `.env` gesetzt), z. B. `./deploy.sh --compose ps -a` oder `--compose logs --tail 50 zammad-init`. Alles nach `--compose` geht an Compose |
 | `--backup` | nur Backup erstellen |
 | `--rollback` | letztes Backup + vorherige Images wiederherstellen (**Daten seit dem Backup gehen verloren**) |
 | `--adopt` | bereits laufende Installation nur uebernehmen (Marker setzen), ohne zu aktualisieren; normalerweise nicht noetig, da der normale Aufruf danach fragt |
