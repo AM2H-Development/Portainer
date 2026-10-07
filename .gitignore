@@ -1,1 +1,7 @@
 .env
+
+# deploy.sh
+.deploy-state
+.deploy-state.tmp
+.deploy.lock
+backups/

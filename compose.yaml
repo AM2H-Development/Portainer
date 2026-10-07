@@ -2,7 +2,8 @@ name: ${PROJECT}
 
 services:
   portainer:
-    image: "portainer/portainer-ce:2.45.0-alpine"
+    # Version wird im Dockerfile festgelegt (FROM portainer/portainer-ce:<Version>).
+    build: .
     user: "root:988"
     env_file: .env
     container_name: "portainer"
