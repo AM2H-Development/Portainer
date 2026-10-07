@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 5)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 6)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=5
+CORE_VERSION=6
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -601,8 +601,8 @@ cmd_status() {
   ver="$(hook_version 2>/dev/null | head -1 | tr -d '\t' || true)"
   total="$(dc ps -a -q 2>/dev/null | wc -l | tr -d ' ')"
   running="$(dc ps -q --status running 2>/dev/null | wc -l | tr -d ' ')"
-  printf 'app=%s\tversion=%s\tcontainers=%s/%s\tcore=%s\tinstalled=%s\tlast_update=%s\tlast_backup=%s\tcommit=%s\n' \
-    "$SERVICE_NAME" "${ver:--}" "$running" "$total" "$CORE_VERSION" \
+  printf 'app=%s\tversion=%s\tcontainers=%s/%s\tcore=%s\tcore_hash=%s\tinstalled=%s\tlast_update=%s\tlast_backup=%s\tcommit=%s\n' \
+    "$SERVICE_NAME" "${ver:--}" "$running" "$total" "$CORE_VERSION" "$(sha256sum "$ROOT/deploy.sh" | cut -c1-8)" \
     "$(state_get INSTALLED_AT)" "$(state_get LAST_UPDATE)" "$(state_get LAST_BACKUP)" \
     "$(git rev-parse --short HEAD 2>/dev/null || echo -)"
 }

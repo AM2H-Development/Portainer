@@ -28,7 +28,7 @@ Die Datei `.env` wird nie ueberschrieben und Geheimnisse werden nie neu erzeugt,
 | `--allow-major` | Major-Upgrade erlauben, falls ein Dienst es per `hook_check_update` sperrt |
 | `--no-pull` | kein `git pull` |
 | `--check` | Updates pruefen: baut Images, vergleicht mit dem laufenden Stand, aendert nichts. Exit-Code 10 = Update verfuegbar |
-| `--status` | eine Statuszeile (Version, Container, letztes Update ...) fuer das Inventar |
+| `--status` | eine Statuszeile (Version, Container, Kern-Version und -Hash, letztes Update ...) fuer das Inventar |
 | `--backup` | nur Backup erstellen |
 | `--rollback` | letztes Backup + vorherige Images wiederherstellen (**Daten seit dem Backup gehen verloren**) |
 | `--adopt` | bereits laufende Installation nur uebernehmen (Marker setzen), ohne zu aktualisieren; normalerweise nicht noetig, da der normale Aufruf danach fragt |
