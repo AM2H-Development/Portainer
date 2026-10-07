@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 2)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 3)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=2
+CORE_VERSION=3
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -47,11 +47,15 @@ MIN_FREE_MB=2048              # Mindestens freier Platz im Repo-Verzeichnis
 hook_preflight() { :; }       # zusaetzliche Pruefungen vor Install/Update
 hook_version()   { :; }       # gibt die laufende Dienst-Version aus (nur Anzeige)
 hook_backup()    { :; }       # $1 = Backup-Verzeichnis (z. B. pg_dump, laeuft bei laufenden Diensten)
-hook_restore()   { :; }       # $1 = Backup-Verzeichnis (Dienste laufen wieder)
+hook_restore()   { :; }       # $1 = Backup-Verzeichnis (Dienste sind gestoppt; Hook startet bei Bedarf selbst Teile)
+hook_check_update() { :; }    # nach dem Bauen, vor der Rueckfrage; != 0 bricht das Update ab (z. B. Major-Sperre)
+hook_post_up()   { :; }       # nach Start und Health-Check (z. B. Datenbank-Extensions aktualisieren)
 hook_smoke()     { :; }       # Funktionstest nach Start
 
 # --- Argumente ---------------------------------------------------------------
 MODE=auto; YES=0; DRY=0; NOPULL=0; ADD_MISSING=0
+ALLOW_MAJOR=0                 # fuer Hooks (hook_check_update)
+export ALLOW_MAJOR
 
 usage() {
   cat <<EOF
@@ -62,6 +66,7 @@ Aufruf: ./deploy.sh [Optionen]
   --rollback      letztes Backup + vorherige Images wiederherstellen
   --adopt         bereits laufende Installation uebernehmen (nichts aendern)
   --add-missing   neue Variablen aus sample.env an .env anhaengen
+  --allow-major   Major-Upgrade erlauben (sperrt ein Dienst per hook_check_update)
   --no-pull       kein git pull
   --yes, -y       Rueckfragen automatisch bestaetigen (z. B. fuer Cron)
   --dry-run       nur anzeigen, was passieren wuerde
@@ -75,6 +80,7 @@ for arg in "$@"; do
     --rollback)    MODE=rollback ;;
     --adopt)       MODE=adopt ;;
     --add-missing) ADD_MISSING=1 ;;
+    --allow-major) ALLOW_MAJOR=1 ;;
     --no-pull)     NOPULL=1 ;;
     --yes|-y)      YES=1 ;;
     --dry-run)     DRY=1 ;;
@@ -281,6 +287,19 @@ snapshot_images() {
   done < <(dc config --images | sort -u)
 }
 
+# Wie snapshot_images, aber mit den IDs der Images, die gerade WIRKLICH laufen
+# ("-" = Dienst laeuft nicht oder noch nie mit diesem Image). So bleibt ein
+# abgebrochenes/abgelehntes Update beim naechsten Lauf erkennbar.
+snapshot_running() {
+  local running name id cid
+  running="$(for cid in $(dc ps -a -q); do docker inspect -f '{{.Config.Image}} {{.Image}}' "$cid"; done)"
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    id="$(awk -v n="$name" '$1 == n { print $2; exit }' <<<"$running")"
+    printf '%s %s\n' "$name" "${id:--}"
+  done < <(dc config --images | sort -u)
+}
+
 image_repo() {
   local name=$1
   if [[ ${name##*/} == *:* ]]; then printf '%s' "${name%:*}"; else printf '%s' "$name"; fi
@@ -350,7 +369,7 @@ BACKUP_STOPPED=0
 ensure_helper_image() {
   docker image inspect "$BACKUP_IMAGE" >/dev/null 2>&1 && return 0
   info "Lade Hilfs-Image $BACKUP_IMAGE ..."
-  run_quiet docker pull -q "$BACKUP_IMAGE"
+  run_quiet docker pull -q "$BACKUP_IMAGE" || return 1
 }
 
 project_name() { dc config 2>/dev/null | sed -n 's/^name: *//p' | head -1; }
@@ -367,7 +386,7 @@ archive_paths() {
   for p in "${paths[@]}"; do
     [[ $DRY == 1 || -e $p ]] || die "Backup-Pfad existiert nicht: $p"
   done
-  ensure_helper_image
+  ensure_helper_image || return 1
   run docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     -v "$ROOT:/src:ro" -v "$ROOT/$dir:/out" "$BACKUP_IMAGE" \
     sh -c 'tar -czpf /out/files.tar.gz --numeric-owner -C /src "$@" && chown "$HOST_UID:$HOST_GID" /out/files.tar.gz' sh "${paths[@]}"
@@ -386,10 +405,10 @@ archive_volumes() {
   for v in "${BACKUP_VOLUMES[@]}"; do
     real="$(volume_real_name "$v")"
     if [[ -z $real ]]; then warn "Volume '$v' existiert nicht - uebersprungen."; continue; fi
-    ensure_helper_image
+    ensure_helper_image || return 1
     run docker run --rm -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
       -v "$real:/data:ro" -v "$ROOT/$dir:/out" "$BACKUP_IMAGE" \
-      sh -c 'tar -czpf "/out/vol_$0.tar.gz" --numeric-owner -C /data . && chown "$HOST_UID:$HOST_GID" "/out/vol_$0.tar.gz"' "$v"
+      sh -c 'tar -czpf "/out/vol_$0.tar.gz" --numeric-owner -C /data . && chown "$HOST_UID:$HOST_GID" "/out/vol_$0.tar.gz"' "$v" || return 1
   done
 }
 
@@ -420,20 +439,25 @@ latest_backup() {
 }
 
 # $1 = Datei mit Image-Snapshot (fuer Rollback)
+# Hinweis: Wird in 'if !' aufgerufen, dort ist 'set -e' unwirksam -> jeder Schritt prueft selbst.
 do_backup() {
   BACKUP_DIR="backups/$(date +%Y%m%d_%H%M%S)"
   info "Backup nach $BACKUP_DIR"
-  run mkdir -p "$BACKUP_DIR"
-  run chmod 700 backups "$BACKUP_DIR"
-  [[ $DRY == 1 ]] || cp "$1" "$BACKUP_DIR/images.txt"
-  call_hook hook_backup "$BACKUP_DIR"
+  run mkdir -p "$BACKUP_DIR" || return 1
+  run chmod 700 backups "$BACKUP_DIR" || return 1
+  if [[ $DRY != 1 ]]; then cp "$1" "$BACKUP_DIR/images.txt" || return 1; fi
+  call_hook hook_backup "$BACKUP_DIR" || return 1
   if (( ${#BACKUP_PATHS[@]} + ${#BACKUP_VOLUMES[@]} > 0 )) && [[ $BACKUP_STOP == 1 ]]; then
     info "Stoppe Dienste fuer ein konsistentes Datei-Backup ..."
-    run dc stop
     BACKUP_STOPPED=1
+    run dc stop || return 1
   fi
-  archive_paths "$BACKUP_DIR"
-  archive_volumes "$BACKUP_DIR"
+  archive_paths "$BACKUP_DIR" || return 1
+  archive_volumes "$BACKUP_DIR" || return 1
+  if [[ $DRY != 1 && ! -s $BACKUP_DIR/files.tar.gz ]]; then
+    err "Backup-Archiv fehlt oder ist leer: $BACKUP_DIR/files.tar.gz"
+    return 1
+  fi
   state_set LAST_BACKUP "$BACKUP_DIR"
   ok "Backup fertig: $BACKUP_DIR"
   rotate_backups
@@ -454,6 +478,7 @@ cmd_install() {
   run_quiet dc build --pull
   run dc up -d
   wait_healthy || die "Erstinstallation nicht gesund - siehe Ausgabe oben."
+  call_hook hook_post_up || die "hook_post_up fehlgeschlagen."
   call_hook hook_smoke || die "Smoke-Test fehlgeschlagen."
   state_set INSTALLED_AT "$(date -Is)"
   state_set LAST_UPDATE "$(date -Is)"
@@ -465,7 +490,7 @@ cmd_update() {
   info "Update: $SERVICE_NAME"
   local ver_before ver_after
   ver_before="$(hook_version 2>/dev/null || true)"
-  snapshot_images > "$TMP/before"
+  snapshot_running > "$TMP/before"
 
   info "Lade/baue Images ..."
   run_quiet dc pull --ignore-buildable
@@ -483,6 +508,7 @@ cmd_update() {
   echo "Image-Aenderungen:"
   show_image_changes "$TMP/before" "$TMP/after"
   [[ $GIT_CHANGED == 1 ]] && echo "   (Konfiguration per git pull geaendert)"
+  call_hook hook_check_update || die "Update abgebrochen (hook_check_update). Siehe Meldung oben."
   confirm "Update durchfuehren? Es wird vorher ein Backup erstellt." || die "Abgebrochen."
 
   tag_previous "$TMP/before" "$TMP/after"
@@ -494,7 +520,7 @@ cmd_update() {
 
   info "Starte Dienste mit neuen Images ..."
   run dc up -d --remove-orphans
-  if ! wait_healthy || ! call_hook hook_smoke; then
+  if ! wait_healthy || ! call_hook hook_post_up || ! call_hook hook_smoke; then
     err "Update fehlgeschlagen. Backup: $BACKUP_DIR"
     err "Zurueck zum alten Stand: ./deploy.sh --rollback"
     exit 1
@@ -508,7 +534,7 @@ cmd_update() {
 
 cmd_backup() {
   [[ -f .deploy-state ]] || warn "Noch nicht installiert/uebernommen (.deploy-state fehlt)."
-  snapshot_images > "$TMP/before"
+  snapshot_running > "$TMP/before"
   if (( ${#BACKUP_PATHS[@]} + ${#BACKUP_VOLUMES[@]} > 0 )) && [[ $BACKUP_STOP == 1 ]]; then
     confirm "Dienste werden fuer das Backup kurz gestoppt. Fortfahren?" || die "Abgebrochen."
   fi
@@ -540,9 +566,9 @@ cmd_rollback() {
   fi
   restore_paths "$dir"
   restore_volumes "$dir"
+  call_hook hook_restore "$dir" || die "hook_restore fehlgeschlagen."
   run dc up -d --no-build
   wait_healthy || die "Dienste nach Rollback nicht gesund."
-  call_hook hook_restore "$dir"
   call_hook hook_smoke || die "Smoke-Test nach Rollback fehlgeschlagen."
   ok "Rollback abgeschlossen."
   warn "Der Git-Stand ist unveraendert. Aenderung am Dockerfile ggf. per git revert zuruecknehmen, sonst baut das naechste Update wieder die neue Version."

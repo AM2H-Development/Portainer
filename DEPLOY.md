@@ -25,6 +25,7 @@ Die Datei `.env` wird nie ueberschrieben und Geheimnisse werden nie neu erzeugt,
 |---|---|
 | `--yes`, `-y` | Rueckfragen automatisch bestaetigen (Cron) |
 | `--dry-run` | nur anzeigen, was passieren wuerde |
+| `--allow-major` | Major-Upgrade erlauben, falls ein Dienst es per `hook_check_update` sperrt |
 | `--no-pull` | kein `git pull` |
 | `--backup` | nur Backup erstellen |
 | `--rollback` | letztes Backup + vorherige Images wiederherstellen (**Daten seit dem Backup gehen verloren**) |
@@ -65,9 +66,14 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 | `KEEP_BACKUPS`, `HEALTH_TIMEOUT`, `MIN_FREE_MB` | Grenzwerte | `7`, `180`, `2048` |
 | `hook_version` | gibt die laufende Version aus (Anzeige) | – |
 | `hook_backup DIR` | zusaetzliche Sicherung, z. B. `pg_dump` (Dienste laufen) | – |
-| `hook_restore DIR` | Wiederherstellung dazu (Dienste laufen) | – |
+| `hook_restore DIR` | Wiederherstellung dazu; die Dienste sind gestoppt, der Hook startet bei Bedarf selbst Teile (z. B. nur die Datenbank) | – |
+| `hook_check_update` | nach dem Bauen, vor der Rueckfrage; Rueckgabewert != 0 bricht das Update ab (z. B. Major-Sperre, siehe `--allow-major`) | – |
+| `hook_post_up` | nach Start und Health-Check, z. B. Datenbank-Extensions aktualisieren | – |
 | `hook_smoke` | Funktionstest nach dem Start; Rueckgabewert != 0 = Fehler | – |
 | `hook_preflight` | zusaetzliche Vorpruefungen | – |
+
+**Hinweis zu Hooks:** `set -e` ist in Hooks teilweise unwirksam (sie laufen u. a. in `if`-Bedingungen). Jeder Schritt in
+`hook_backup`, `hook_smoke` usw. muss Fehler selbst mit `|| return 1` weitergeben.
 
 ## Konventionen fuer `sample.env`
 
