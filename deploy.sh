@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 9)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 10)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=9
+CORE_VERSION=10
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -71,6 +71,7 @@ Aufruf: ./deploy.sh [Optionen]
   --check         Updates pruefen (baut Images, aendert nichts; Exit 10 = Update verfuegbar)
   --status        eine Statuszeile ausgeben (fuer das Inventar)
   --compose ...   docker compose fuer diesen Stack ausfuehren (alle Dateien/Optionen gesetzt), z. B. --compose ps -a
+  --restore DIR   Wiederherstellung aus einem Backup auf einem NEUEN/leeren Server (DIR = backups/<Zeitstempel>; muss das erste Argument sein)
   --backup        nur ein Backup erstellen
   --rollback      letztes Backup + vorherige Images wiederherstellen
   --adopt         bereits laufende Installation uebernehmen (nichts aendern)
@@ -83,6 +84,11 @@ Aufruf: ./deploy.sh [Optionen]
 EOF
 }
 
+RESTORE_DIR=""
+if [[ ${1:-} == --restore ]]; then
+  [[ -n ${2:-} ]] || { echo "Aufruf: ./deploy.sh --restore backups/<Zeitstempel>" >&2; exit 1; }
+  MODE=restore; RESTORE_DIR="$2"; shift 2
+fi
 COMPOSE_ARGS=()
 if [[ ${1:-} == --compose ]]; then MODE=compose; COMPOSE_ARGS=("${@:2}"); set --; fi
 
@@ -699,6 +705,26 @@ cmd_status() {
     "$(git rev-parse --short HEAD 2>/dev/null || echo -)"
 }
 
+# Wiederherstellung auf einem neuen/leeren Server aus einem Backup (z. B. nach: tools/offsite-backup.sh restore).
+cmd_restore() {
+  local dir=$RESTORE_DIR
+  warn "Wiederherstellung aus $dir: vorhandene Daten dieser Anwendung werden ersetzt."
+  confirm "Wirklich wiederherstellen?" || die "Abgebrochen."
+  info "Erzeuge Container, Netzwerke und Volumes (Images werden geladen/gebaut) ..."
+  run_quiet_retry 3 dc create || die "Container konnten nicht angelegt werden (Registry erreichbar?)."
+  restore_paths "$dir"
+  restore_volumes "$dir"
+  call_hook hook_restore "$dir" || die "hook_restore fehlgeschlagen."
+  run dc up -d
+  wait_healthy || die "Dienste nach der Wiederherstellung nicht gesund - siehe Ausgabe oben."
+  call_hook hook_post_up || die "hook_post_up fehlgeschlagen."
+  call_hook hook_smoke || die "Smoke-Test nach der Wiederherstellung fehlgeschlagen."
+  state_set INSTALLED_AT "$(date -Is)"
+  state_set LAST_RESTORE "$dir"
+  state_set CORE_VERSION "$CORE_VERSION"
+  ok "Wiederherstellung abgeschlossen: $SERVICE_NAME laeuft mit den Daten aus $dir."
+}
+
 cmd_adopt() {
   [[ -n "$(dc ps -a -q)" ]] || die "Keine Container dieses Projekts gefunden - es gibt nichts zu uebernehmen."
   state_set INSTALLED_AT "$(date -Is)"
@@ -720,6 +746,18 @@ main() {
     dc "${COMPOSE_ARGS[@]}"
     return $?
   fi
+  if [[ $MODE == restore ]]; then
+    export DEPLOY_RESTORE=1   # Hooks koennen Neuinstallations-Pruefungen (z. B. Admin-Zugang) auslassen
+    RESTORE_DIR="${RESTORE_DIR#"$ROOT"/}"
+    [[ $RESTORE_DIR != /* ]] || die "Das Backup muss unterhalb von $ROOT liegen (z. B. backups/<Zeitstempel>)."
+    [[ -f $RESTORE_DIR/files.tar.gz ]] || die "Kein gueltiges Backup: $RESTORE_DIR/files.tar.gz fehlt."
+    [[ ! -e $RESTORE_DIR/.incomplete ]] || die "Das Backup $RESTORE_DIR ist unvollstaendig (.incomplete)."
+    if [[ ! -f .env && $DRY != 1 ]]; then
+      info ".env wird aus dem Backup geholt ..."
+      tar -xzf "$RESTORE_DIR/files.tar.gz" .env || die ".env konnte nicht aus dem Backup gelesen werden."
+      chmod 600 .env
+    fi
+  fi
   acquire_lock
   git_sync
   load_conf
@@ -734,6 +772,7 @@ main() {
     adopt)    cmd_adopt ;;
     backup)   cmd_backup ;;
     rollback) cmd_rollback ;;
+    restore)  cmd_restore ;;
     check)    [[ -f .deploy-state ]] || die "Noch nicht installiert - nichts zu pruefen."; cmd_update ;;
     auto)     if [[ -f .deploy-state ]]; then cmd_update; else cmd_install; fi ;;
   esac

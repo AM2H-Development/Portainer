@@ -31,6 +31,7 @@ Die Datei `.env` wird nie ueberschrieben und Geheimnisse werden nie neu erzeugt,
 | `--status` | eine Statuszeile (Version, Container, Kern-Version und -Hash, letztes Update ...) fuer das Inventar |
 | `--compose ...` | `docker compose` fuer diesen Stack (alle Dateien, Projekt und `.env` gesetzt), z. B. `./deploy.sh --compose ps -a` oder `--compose logs --tail 50 zammad-init`. Alles nach `--compose` geht an Compose |
 | `--backup` | nur Backup erstellen |
+| `--restore backups/<Zeitstempel>` | Wiederherstellung auf einem **neuen/leeren Server** aus einem Backup (z. B. aus dem externen Backup). Muss das erste Argument sein. Holt die `.env` aus dem Backup, legt Container/Volumes an, spielt Dateien und Datenbank ein, startet und prueft |
 | `--rollback` | letztes Backup + vorherige Images wiederherstellen (**Daten seit dem Backup gehen verloren**) |
 | `--adopt` | bereits laufende Installation nur uebernehmen (Marker setzen), ohne zu aktualisieren; normalerweise nicht noetig, da der normale Aufruf danach fragt |
 | `--add-missing` | neue Variablen aus `sample.env` an `.env` anhaengen |
