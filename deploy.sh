@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 3)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 4)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=3
+CORE_VERSION=4
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -62,6 +62,8 @@ usage() {
 Aufruf: ./deploy.sh [Optionen]
 
   (ohne Option)   Erstinstallation bzw. Update, je nach Zustand
+  --check         Updates pruefen (baut Images, aendert nichts; Exit 10 = Update verfuegbar)
+  --status        eine Statuszeile ausgeben (fuer das Inventar)
   --backup        nur ein Backup erstellen
   --rollback      letztes Backup + vorherige Images wiederherstellen
   --adopt         bereits laufende Installation uebernehmen (nichts aendern)
@@ -76,6 +78,8 @@ EOF
 
 for arg in "$@"; do
   case "$arg" in
+    --check)       MODE=check ;;
+    --status)      MODE=status ;;
     --backup)      MODE=backup ;;
     --rollback)    MODE=rollback ;;
     --adopt)       MODE=adopt ;;
@@ -116,6 +120,7 @@ confirm() {
   [[ $a =~ ^[jJyY]$ ]]
 }
 
+state_get() { [[ -f .deploy-state ]] || return 0; grep -E "^$1=" .deploy-state | tail -1 | cut -d= -f2- || true; }
 state_set() {
   [[ $DRY == 1 ]] && return 0
   touch .deploy-state
@@ -509,6 +514,10 @@ cmd_update() {
   show_image_changes "$TMP/before" "$TMP/after"
   [[ $GIT_CHANGED == 1 ]] && echo "   (Konfiguration per git pull geaendert)"
   call_hook hook_check_update || die "Update abgebrochen (hook_check_update). Siehe Meldung oben."
+  if [[ $MODE == check ]]; then
+    warn "UPDATE VERFUEGBAR (nur Pruefung - es wurde nichts veraendert)."
+    exit 10
+  fi
   confirm "Update durchfuehren? Es wird vorher ein Backup erstellt." || die "Abgebrochen."
 
   tag_previous "$TMP/before" "$TMP/after"
@@ -574,6 +583,17 @@ cmd_rollback() {
   warn "Der Git-Stand ist unveraendert. Aenderung am Dockerfile ggf. per git revert zuruecknehmen, sonst baut das naechste Update wieder die neue Version."
 }
 
+cmd_status() {
+  local ver total running
+  ver="$(hook_version 2>/dev/null | head -1 | tr -d '\t' || true)"
+  total="$(dc ps -a -q 2>/dev/null | wc -l | tr -d ' ')"
+  running="$(dc ps -q --status running 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'app=%s\tversion=%s\tcontainers=%s/%s\tcore=%s\tinstalled=%s\tlast_update=%s\tlast_backup=%s\tcommit=%s\n' \
+    "$SERVICE_NAME" "${ver:--}" "$running" "$total" "$CORE_VERSION" \
+    "$(state_get INSTALLED_AT)" "$(state_get LAST_UPDATE)" "$(state_get LAST_BACKUP)" \
+    "$(git rev-parse --short HEAD 2>/dev/null || echo -)"
+}
+
 cmd_adopt() {
   [[ -n "$(dc ps -a -q)" ]] || die "Keine Container dieses Projekts gefunden - es gibt nichts zu uebernehmen."
   state_set INSTALLED_AT "$(date -Is)"
@@ -585,6 +605,11 @@ cmd_adopt() {
 # --- Ablauf ------------------------------------------------------------------
 main() {
   require_cmds
+  if [[ $MODE == status ]]; then
+    load_conf
+    cmd_status
+    return 0
+  fi
   acquire_lock
   git_sync
   load_conf
@@ -598,6 +623,7 @@ main() {
     adopt)    cmd_adopt ;;
     backup)   cmd_backup ;;
     rollback) cmd_rollback ;;
+    check)    [[ -f .deploy-state ]] || die "Noch nicht installiert - nichts zu pruefen."; cmd_update ;;
     auto)     if [[ -f .deploy-state ]]; then cmd_update; else cmd_install; fi ;;
   esac
   dc ps || true
