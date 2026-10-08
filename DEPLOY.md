@@ -77,6 +77,7 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 | `hook_check_update` | nach dem Bauen, vor der Rueckfrage; Rueckgabewert != 0 bricht das Update ab (z. B. Major-Sperre, siehe `--allow-major`) | – |
 | `hook_post_up` | nach Start und Health-Check, z. B. Datenbank-Extensions aktualisieren | – |
 | `hook_smoke` | Funktionstest nach dem Start; Rueckgabewert != 0 = Fehler | – |
+| `hook_config_check` | Adress-/URL-Einstellungen pruefen (nach Install, Update, Restore); **nur Warnung**, Rueckgabewert wird ignoriert | – |
 | `hook_preflight` | zusaetzliche Vorpruefungen | – |
 
 **Hinweis zu Hooks:** `set -e` ist in Hooks teilweise unwirksam (sie laufen u. a. in `if`-Bedingungen). Jeder Schritt in

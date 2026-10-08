@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=10
+CORE_VERSION=11
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -57,6 +57,7 @@ hook_pre_pull()  { :; }       # vor dem Laden/Bauen der Images (z. B. Upstream-K
 hook_check_update() { :; }    # nach dem Bauen, vor der Rueckfrage; != 0 bricht das Update ab (z. B. Major-Sperre)
 hook_post_up()   { :; }       # nach Start und Health-Check (z. B. Datenbank-Extensions aktualisieren)
 hook_smoke()     { :; }       # Funktionstest nach Start
+hook_config_check() { :; }    # nur Warnung (Rueckgabewert wird ignoriert): Adress-/URL-Einstellungen der App pruefen, auch nach --restore
 
 # --- Argumente ---------------------------------------------------------------
 MODE=auto; YES=0; DRY=0; NOPULL=0; ADD_MISSING=0
@@ -178,6 +179,9 @@ call_hook() {
   local h=$1; shift
   if [[ $DRY == 1 ]]; then printf '   [dry-run] %s %s\n' "$h" "$*"; else "$h" "$@"; fi
 }
+
+# Warn-only: Fehler im Hook duerfen nie einen Rollback ausloesen.
+config_check() { call_hook hook_config_check || true; }
 
 confirm() {
   [[ $YES == 1 || $DRY == 1 ]] && return 0
@@ -595,6 +599,7 @@ cmd_install() {
   wait_healthy || die "Erstinstallation nicht gesund - siehe Ausgabe oben."
   call_hook hook_post_up || die "hook_post_up fehlgeschlagen."
   call_hook hook_smoke || die "Smoke-Test fehlgeschlagen."
+  config_check
   state_set INSTALLED_AT "$(date -Is)"
   state_set LAST_UPDATE "$(date -Is)"
   state_set CORE_VERSION "$CORE_VERSION"
@@ -646,6 +651,7 @@ cmd_update() {
     exit 1
   fi
 
+  config_check
   ver_after="$(hook_version 2>/dev/null || true)"
   state_set LAST_UPDATE "$(date -Is)"
   run docker image prune -f >/dev/null
@@ -719,6 +725,7 @@ cmd_restore() {
   wait_healthy || die "Dienste nach der Wiederherstellung nicht gesund - siehe Ausgabe oben."
   call_hook hook_post_up || die "hook_post_up fehlgeschlagen."
   call_hook hook_smoke || die "Smoke-Test nach der Wiederherstellung fehlgeschlagen."
+  config_check
   state_set INSTALLED_AT "$(date -Is)"
   state_set LAST_RESTORE "$dir"
   state_set CORE_VERSION "$CORE_VERSION"
@@ -743,8 +750,9 @@ main() {
   fi
   if [[ $MODE == compose ]]; then
     load_conf
-    dc "${COMPOSE_ARGS[@]}"
-    return $?
+    local rc=0
+    dc "${COMPOSE_ARGS[@]}" || rc=$?   # || verhindert die ERR-Meldung bei fehlschlagenden Befehlen
+    return $rc
   fi
   if [[ $MODE == restore ]]; then
     export DEPLOY_RESTORE=1   # Hooks koennen Neuinstallations-Pruefungen (z. B. Admin-Zugang) auslassen
