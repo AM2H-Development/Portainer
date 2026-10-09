@@ -31,3 +31,26 @@ hook_smoke() {
   err "Portainer antwortet nicht auf /api/system/status (9443/9000)."
   return 1
 }
+
+# Das Image ist exakt gepinnt (Dockerfile): neuere Versionen meldet dieser Hook, ohne etwas zu aendern.
+#   compatible=X  neuere Patch-Version derselben Linie (z. B. 2.45.1 -> 2.45.2)
+#   newer=Y       neuere Linie (z. B. 2.46.0) - nur Hinweis, LTS/STS und Release Notes beachten
+hook_latest_version() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local cur tags latest_compat latest_newer
+  cur="$(sed -n 's|^FROM portainer/portainer-ce:\([0-9][0-9.]*\).*|\1|p' "$ROOT/Dockerfile" | head -1)"
+  [[ -n $cur ]] || return 0
+  tags="$(curl -sf --max-time 15 \
+    'https://hub.docker.com/v2/repositories/portainer/portainer-ce/tags?page_size=100&ordering=last_updated&name=-alpine' \
+    | grep -oE '"name":"[0-9]+\.[0-9]+\.[0-9]+-alpine"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -uV)" || return 0
+  [[ -n $tags ]] || return 0
+  latest_compat="$(grep -E "^${cur%.*}\\." <<<"$tags" | tail -1)"
+  latest_newer="$(tail -1 <<<"$tags")"
+  if [[ -n $latest_compat && $(printf '%s\n%s\n' "$cur" "$latest_compat" | sort -V | tail -1) != "$cur" ]]; then
+    echo "compatible=$latest_compat"
+  fi
+  if [[ -n $latest_newer && ${latest_newer%.*} != "${cur%.*}" && $(printf '%s\n%s\n' "$cur" "$latest_newer" | sort -V | tail -1) != "$cur" ]]; then
+    echo "newer=$latest_newer"
+  fi
+  return 0
+}
