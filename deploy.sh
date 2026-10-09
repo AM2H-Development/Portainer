@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 13)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 14)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=13
+CORE_VERSION=14
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -202,6 +202,25 @@ query_latest() {
   done <<<"$out"
   return 0
 }
+
+# --- Docker-Hub-Abfragen fuer hook_latest_version ------------------------------
+# hub_tags REPO [FILTER]  je Tag eine Zeile "name sha256:digest" (die ~100 zuletzt aktualisierten; FILTER = Teilstring im Tagnamen).
+#                         Ohne Netz, ohne curl oder mit DEPLOY_OFFLINE=1 leer.
+# hub_digest TAGS TAG     Digest eines Tags aus der hub_tags-Ausgabe
+# hub_tag_for TAGS DIGEST REGEX  hoechster Tag (sort -V) mit diesem Digest, dessen Name auf REGEX passt (ERE)
+# hub_max TAGS REGEX      hoechster Tag, dessen Name auf REGEX passt
+# ver_gt A B              wahr, wenn Version A groesser ist als B
+hub_tags() {
+  [[ ${DEPLOY_OFFLINE:-0} == 1 ]] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  local json
+  json="$(curl -sf --max-time 15 "https://hub.docker.com/v2/repositories/$1/tags?page_size=100&ordering=last_updated${2:+&name=$2}")" || return 0
+  sed 's/{"creator"/\n&/g' <<<"$json" | sed -n 's/.*"name":"\([^"]*\)".*"digest":"\(sha256:[0-9a-f]*\)".*/\1 \2/p'
+}
+hub_digest()  { awk -v t="$2" '$1 == t { print $2; exit }' <<<"$1"; }
+hub_tag_for() { [[ -n $2 ]] || return 0; DIGEST="$2" RE="$3" awk '$2 == ENVIRON["DIGEST"] && $1 ~ ENVIRON["RE"] { print $1 }' <<<"$1" | sort -V | tail -1; }
+hub_max()     { RE="$2" awk '$1 ~ ENVIRON["RE"] { print $1 }' <<<"$1" | sort -V | tail -1; }
+ver_gt()      { [[ -n ${1:-} && -n ${2:-} && $1 != "$2" && $(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -1) == "$1" ]]; }
 
 confirm() {
   [[ $YES == 1 || $DRY == 1 ]] && return 0
