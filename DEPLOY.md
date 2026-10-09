@@ -71,7 +71,7 @@ zuruecknehmen, sonst baut das naechste Update wieder die neue Version.
 | `NETWORKS` | externe Docker-Netzwerke, werden bei Bedarf angelegt | `cloudflare-net` |
 | `KEEP_BACKUPS`, `HEALTH_TIMEOUT`, `MIN_FREE_MB` | Grenzwerte | `7`, `180`, `2048` |
 | `hook_version` | gibt die laufende Version aus (Anzeige) | – |
-| `hook_latest_version` | fuer fest gepinnte Dienste: meldet neuere Upstream-Versionen per Netzabfrage. Ausgabe: `compatible=X` (Update in derselben Linie, `--check` endet mit Exit 10), `newer=Y` (neue Linie, nur Hinweis); keine Ausgabe = aktuell/unbekannt. Fliesst in `--status`/`--check` ein; `DEPLOY_OFFLINE=1` ueberspringt die Abfrage | – |
+| `hook_latest_version` | fuer fest gepinnte Dienste: meldet neuere Upstream-Versionen per Netzabfrage. Ausgabe: `compatible=X` (Update in derselben Linie, `--check` endet mit Exit 10), `newer=Y` (neue Linie, nur Hinweis), `pending=Z` (Repo ist schon auf Z angehoben, der Container laeuft noch mit einer aelteren Version; `--check` endet mit Exit 10); keine Ausgabe = aktuell/unbekannt. Fliesst in `--status`/`--check` ein; der Hook muss bei `DEPLOY_OFFLINE=1` selbst auf Netzabfragen verzichten | – |
 | `hook_backup DIR` | zusaetzliche Sicherung, z. B. `pg_dump` (Dienste laufen) | – |
 | `hook_pre_pull` | vor dem Laden/Bauen der Images, z. B. einen Upstream-Klon aktualisieren | – |
 | `hook_restore DIR` | Wiederherstellung dazu; die Dienste sind gestoppt, der Hook startet bei Bedarf selbst Teile (z. B. nur die Datenbank) | – |
