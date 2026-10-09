@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 10)
+# deploy.sh - zentrales Deploy-/Update-Skript                  (Kern-Version 12)
 #
 # Diese Datei ist in ALLEN Repos identisch. Dienstspezifisches (Hooks,
 # Backup-Pfade, Smoke-Test) steht ausschliesslich in deploy.conf.sh.
@@ -14,7 +14,7 @@
 # =============================================================================
 set -Eeuo pipefail
 
-CORE_VERSION=11
+CORE_VERSION=12
 ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
@@ -51,6 +51,8 @@ MIN_FREE_MB=2048              # Mindestens freier Platz im Repo-Verzeichnis
 # Hooks: in deploy.conf.sh ueberschreiben. Rueckgabewert != 0 bricht ab.
 hook_preflight() { :; }       # zusaetzliche Pruefungen vor Install/Update
 hook_version()   { :; }       # gibt die laufende Dienst-Version aus (nur Anzeige)
+hook_latest_version() { :; }  # fuer fest gepinnte Dienste: gibt neuere Upstream-Versionen aus (Zeilen "compatible=X" = Update in derselben
+                              # Versionslinie, "newer=Y" = neue Linie, nur Hinweis); nichts ausgeben = aktuell/unbekannt. Siehe DEPLOY.md
 hook_backup()    { :; }       # $1 = Backup-Verzeichnis (z. B. pg_dump, laeuft bei laufenden Diensten)
 hook_restore()   { :; }       # $1 = Backup-Verzeichnis (Dienste sind gestoppt; Hook startet bei Bedarf selbst Teile)
 hook_pre_pull()  { :; }       # vor dem Laden/Bauen der Images (z. B. Upstream-Klon aktualisieren)
@@ -182,6 +184,23 @@ call_hook() {
 
 # Warn-only: Fehler im Hook duerfen nie einen Rollback ausloesen.
 config_check() { call_hook hook_config_check || true; }
+
+# Neuere Upstream-Version laut hook_latest_version (nur mit Netz; DEPLOY_OFFLINE=1 ueberspringt die Abfrage).
+# Setzt LATEST_COMPAT und LATEST_NEWER (leer = nichts gefunden).
+LATEST_COMPAT=""; LATEST_NEWER=""
+query_latest() {
+  local out line
+  LATEST_COMPAT=""; LATEST_NEWER=""
+  [[ ${DEPLOY_OFFLINE:-0} == 1 ]] && return 0
+  out="$(hook_latest_version 2>/dev/null || true)"
+  while IFS= read -r line; do
+    case $line in
+      compatible=*) LATEST_COMPAT="${line#compatible=}" ;;
+      newer=*)      LATEST_NEWER="${line#newer=}" ;;
+    esac
+  done <<<"$out"
+  return 0
+}
 
 confirm() {
   [[ $YES == 1 || $DRY == 1 ]] && return 0
@@ -622,6 +641,13 @@ cmd_update() {
     ok "Keine neuen Images und keine Konfigurationsaenderung - nichts zu tun."
     wait_healthy || die "Dienste sind nicht gesund (siehe oben)."
     state_set LAST_CHECK "$(date -Is)"
+    # Fest gepinnte Dienste: neue Upstream-Version nur melden (Aenderung im Dockerfile ist Handarbeit)
+    query_latest
+    [[ -z $LATEST_NEWER ]] || warn "Neue Versionslinie verfuegbar: $LATEST_NEWER (nur Hinweis - Release Notes pruefen, Dockerfile bewusst anheben)."
+    if [[ -n $LATEST_COMPAT ]]; then
+      warn "Neuere Version verfuegbar: $LATEST_COMPAT (Version im Dockerfile anheben, danach ./deploy.sh)."
+      [[ $MODE == check ]] && exit 10
+    fi
     return 0
   fi
 
@@ -705,10 +731,11 @@ cmd_status() {
   ver="$(hook_version 2>/dev/null | head -1 | tr -d '\t' || true)"
   total="$(dc ps -a -q 2>/dev/null | wc -l | tr -d ' ')"
   running="$(dc ps -q --status running 2>/dev/null | wc -l | tr -d ' ')"
-  printf 'app=%s\tversion=%s\tcontainers=%s/%s\tcore=%s\tcore_hash=%s\tinstalled=%s\tlast_update=%s\tlast_backup=%s\tcommit=%s\n' \
+  query_latest
+  printf 'app=%s\tversion=%s\tcontainers=%s/%s\tcore=%s\tcore_hash=%s\tinstalled=%s\tlast_update=%s\tlast_backup=%s\tcommit=%s\tlatest=%s\tlatest_line=%s\n' \
     "$SERVICE_NAME" "${ver:--}" "$running" "$total" "$CORE_VERSION" "$(sha256sum "$ROOT/deploy.sh" | cut -c1-8)" \
     "$(state_get INSTALLED_AT)" "$(state_get LAST_UPDATE)" "$(state_get LAST_BACKUP)" \
-    "$(git rev-parse --short HEAD 2>/dev/null || echo -)"
+    "$(git rev-parse --short HEAD 2>/dev/null || echo -)" "$LATEST_COMPAT" "$LATEST_NEWER"
 }
 
 # Wiederherstellung auf einem neuen/leeren Server aus einem Backup (z. B. nach: tools/offsite-backup.sh restore).
